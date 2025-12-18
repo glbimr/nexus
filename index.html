@@ -11,14 +11,15 @@
         .kanban-column { min-width: 300px; max-width: 300px; }
         .glass-morphism { background: rgba(255, 255, 255, 0.8); backdrop-filter: blur(10px); }
         [v-cloak] { display: none; }
+        #loading.fade-out { opacity: 0; pointer-events: none; }
     </style>
 </head>
 <body class="bg-slate-50 text-slate-900 h-screen overflow-hidden">
     <div id="app" class="h-full">
         <!-- Loading Screen -->
-        <div id="loading" class="fixed inset-0 bg-slate-900 z-[100] flex flex-col items-center justify-center text-white transition-opacity duration-500">
+        <div id="loading" class="fixed inset-0 bg-slate-900 z-[100] flex flex-col items-center justify-center text-white transition-opacity duration-700">
             <div class="w-16 h-16 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4"></div>
-            <p class="font-bold tracking-widest text-sm text-blue-400 uppercase">Initializing System...</p>
+            <p class="font-bold tracking-widest text-sm text-blue-400 uppercase">Synchronizing Neural Links...</p>
         </div>
 
         <!-- Login View -->
@@ -51,7 +52,7 @@
                             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
                             <span id="error-text"></span>
                         </div>
-                        <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-5 rounded-2xl shadow-xl shadow-blue-500/30 transition-all active:scale-95">Authorize Identity</button>
+                        <button type="submit" id="submit-btn" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-5 rounded-2xl shadow-xl shadow-blue-500/30 transition-all active:scale-95">Authorize Identity</button>
                     </form>
                 </div>
             </div>
@@ -59,7 +60,6 @@
 
         <!-- Main App View -->
         <div id="main-view" class="hidden h-full flex overflow-hidden">
-            <!-- Sidebar -->
             <aside class="w-72 bg-slate-900 text-slate-400 flex flex-col shrink-0">
                 <div class="p-8 flex items-center gap-4">
                     <div class="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-blue-600/20">
@@ -93,7 +93,6 @@
                 </div>
             </aside>
 
-            <!-- Content Area -->
             <main class="flex-1 flex flex-col min-w-0 bg-slate-50 relative">
                 <header class="h-20 bg-white border-b border-slate-200 flex items-center justify-between px-10 shrink-0">
                     <div>
@@ -109,9 +108,7 @@
                     </div>
                 </header>
 
-                <div class="flex-1 overflow-y-auto p-10" id="content-container">
-                    <!-- Dynamic Content Injected Here -->
-                </div>
+                <div class="flex-1 overflow-y-auto p-10" id="content-container"></div>
             </main>
         </div>
 
@@ -124,14 +121,15 @@
     <!-- Firebase SDK -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
         import { getFirestore, collection, doc, setDoc, getDoc, updateDoc, deleteDoc, addDoc, onSnapshot, serverTimestamp, query } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
 
+        // Environment Variables
         const firebaseConfig = JSON.parse(__firebase_config);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'nexus-v5';
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'nexus-v4';
 
         // State
         let currentUser = null;
@@ -139,32 +137,79 @@
         let currentTab = 'projects';
         let projects = [];
         let users = [];
-        let tasks = [];
         let selectedProjectId = null;
+        let unsubscribers = [];
 
-        // --- Initialization ---
-        window.onload = () => {
-            setTimeout(() => {
-                document.getElementById('loading').style.opacity = '0';
-                setTimeout(() => document.getElementById('loading').style.display = 'none', 500);
-            }, 1000);
-            
-            onAuthStateChanged(auth, async (user) => {
-                if (user) {
-                    const userDoc = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', user.uid));
-                    if (userDoc.exists()) {
-                        currentUser = { id: user.uid, ...userDoc.data() };
-                        showApp();
-                    } else {
-                        handleLogout();
-                    }
-                } else {
-                    showLogin();
-                }
-            });
+        // UI Logic
+        function dismissLoading() {
+            const loader = document.getElementById('loading');
+            if (loader) {
+                loader.classList.add('fade-out');
+                setTimeout(() => loader.style.display = 'none', 700);
+            }
+        }
+
+        const showLogin = () => {
+            document.getElementById('login-view').classList.remove('hidden');
+            document.getElementById('main-view').classList.add('hidden');
+            dismissLoading();
         };
 
-        // --- Auth Logic ---
+        const showApp = () => {
+            document.getElementById('login-view').classList.add('hidden');
+            document.getElementById('main-view').classList.remove('hidden');
+            
+            document.getElementById('profile-name').innerText = currentUser.name;
+            document.getElementById('profile-role').innerText = currentUser.role;
+            document.getElementById('profile-avatar').innerText = currentUser.name[0].toUpperCase();
+            
+            if (currentUser.role === 'Admin') {
+                document.getElementById('admin-only-nav').classList.remove('hidden');
+            } else {
+                document.getElementById('admin-only-nav').classList.add('hidden');
+            }
+            
+            initDataListeners();
+            switchTab('projects');
+            dismissLoading();
+        };
+
+        // Auth Initialization
+        const initAuth = async () => {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    // We only sign in anonymously if we're not currently signed in
+                    // or if the user explicitly submits the login form.
+                }
+            } catch (error) {
+                console.error("Auth initialization failed", error);
+            }
+        };
+
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                const userRef = doc(db, 'artifacts', appId, 'public', 'data', 'users', user.uid);
+                const userDoc = await getDoc(userRef);
+                if (userDoc.exists()) {
+                    currentUser = { id: user.uid, ...userDoc.data() };
+                    showApp();
+                } else {
+                    // User exists in Auth but not in our Firestore DB - happens on first manual login
+                    // The login handler will take care of creating the doc
+                    showLogin();
+                }
+            } else {
+                showLogin();
+            }
+        });
+
+        initAuth();
+        // Global safety: dismiss loader after 4 seconds regardless
+        setTimeout(dismissLoading, 4000);
+
+        // Window level functions
         window.setLoginRole = (role) => {
             loginRole = role;
             document.getElementById('btn-admin').className = role === 'Admin' ? 'flex-1 py-3 rounded-xl text-sm font-bold transition-all bg-white text-blue-600 shadow-sm' : 'flex-1 py-3 rounded-xl text-sm font-bold transition-all text-slate-500';
@@ -173,17 +218,22 @@
 
         document.getElementById('login-form').onsubmit = async (e) => {
             e.preventDefault();
+            const submitBtn = document.getElementById('submit-btn');
             const userVal = document.getElementById('username').value;
             const passVal = document.getElementById('password').value;
             const errorDiv = document.getElementById('login-error');
             const errorText = document.getElementById('error-text');
 
-            if (loginRole === 'Admin') {
-                if (userVal.toLowerCase() !== 'admin' || passVal !== 'admin123') {
-                    errorText.innerText = "Invalid Admin Credentials";
-                    errorDiv.classList.remove('hidden');
-                    return;
-                }
+            errorDiv.classList.add('hidden');
+            submitBtn.disabled = true;
+            submitBtn.innerText = "Authenticating...";
+
+            if (loginRole === 'Admin' && (userVal.toLowerCase() !== 'admin' || passVal !== 'admin123')) {
+                errorText.innerText = "Invalid Admin Credentials";
+                errorDiv.classList.remove('hidden');
+                submitBtn.disabled = false;
+                submitBtn.innerText = "Authorize Identity";
+                return;
             }
 
             try {
@@ -198,53 +248,49 @@
                 };
                 await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', uid), userData);
                 currentUser = { id: uid, ...userData };
+                showApp();
             } catch (err) {
-                errorText.innerText = "Connection failed. Please retry.";
+                errorText.innerText = "Access Denied: Connection Error";
                 errorDiv.classList.remove('hidden');
+                submitBtn.disabled = false;
+                submitBtn.innerText = "Authorize Identity";
             }
         };
 
         window.handleLogout = async () => {
+            unsubscribers.forEach(u => u());
+            unsubscribers = [];
             await signOut(auth);
             currentUser = null;
             showLogin();
         };
 
-        const showLogin = () => {
-            document.getElementById('login-view').classList.remove('hidden');
-            document.getElementById('main-view').classList.add('hidden');
-        };
-
-        const showApp = () => {
-            document.getElementById('login-view').classList.add('hidden');
-            document.getElementById('main-view').classList.remove('hidden');
-            
-            document.getElementById('profile-name').innerText = currentUser.name;
-            document.getElementById('profile-role').innerText = currentUser.role;
-            document.getElementById('profile-avatar').innerText = currentUser.name[0].toUpperCase();
-            
-            if (currentUser.role === 'Admin') {
-                document.getElementById('admin-only-nav').classList.remove('hidden');
-            }
-            
-            initDataListeners();
-            switchTab('projects');
-        };
-
-        // --- Data Listeners ---
+        // Data Listeners
         const initDataListeners = () => {
-            onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'projects'), (snapshot) => {
-                projects = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-                if (currentTab === 'projects') renderProjects();
-            });
+            if (!auth.currentUser) return;
+            
+            const projectsUnsub = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'projects'), 
+                (snapshot) => {
+                    projects = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+                    if (currentTab === 'projects') renderProjects();
+                }, 
+                (err) => console.error("Projects Listener Error:", err)
+            );
 
-            onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'users'), (snapshot) => {
-                users = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-                if (currentTab === 'team') renderTeam();
-            });
+            const usersUnsub = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'users'), 
+                (snapshot) => {
+                    users = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+                    if (currentTab === 'team' || currentTab === 'admin') {
+                        currentTab === 'team' ? renderTeam() : renderAdmin();
+                    }
+                },
+                (err) => console.error("Users Listener Error:", err)
+            );
+
+            unsubscribers.push(projectsUnsub, usersUnsub);
         };
 
-        // --- Router ---
+        // Router
         window.switchTab = (tab) => {
             currentTab = tab;
             selectedProjectId = null;
@@ -258,7 +304,7 @@
             if (tab === 'admin') renderAdmin();
         };
 
-        // --- Renderers ---
+        // View Renderers
         const renderProjects = () => {
             document.getElementById('header-title').innerText = 'Projects';
             const container = document.getElementById('content-container');
@@ -268,6 +314,7 @@
                     ${currentUser.role === 'Admin' ? '<button onclick="openNewProjectModal()" class="bg-blue-600 text-white px-6 py-3 rounded-2xl font-bold flex items-center gap-2 text-sm shadow-xl shadow-blue-600/20">Create Project</button>' : ''}
                 </div>
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                    ${projects.length === 0 ? '<p class="text-slate-400 font-bold py-10">No projects found. Create one to begin.</p>' : ''}
                     ${projects.map(p => `
                         <div onclick="openKanban('${p.id}', '${p.name}')" class="bg-white p-8 rounded-[2rem] border border-slate-100 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all cursor-pointer group">
                             <div class="w-14 h-14 bg-slate-50 text-slate-400 rounded-2xl flex items-center justify-center mb-6 group-hover:bg-blue-600 group-hover:text-white transition-all shadow-inner">
@@ -301,10 +348,11 @@
                 </div>
             `;
 
-            onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'tasks'), (snapshot) => {
+            const tasksUnsub = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'tasks'), (snapshot) => {
                 const pTasks = snapshot.docs.map(d => ({ id: d.id, ...d.data() })).filter(t => t.projectId === pid);
                 renderKanbanColumns(pTasks);
             });
+            unsubscribers.push(tasksUnsub);
         };
 
         const renderKanbanColumns = (pTasks) => {
@@ -357,15 +405,15 @@
                         ${users.map(u => `
                             <div class="p-6 flex items-center justify-between hover:bg-slate-50 transition-all">
                                 <div class="flex items-center gap-5">
-                                    <div class="w-12 h-12 rounded-2xl bg-slate-100 flex items-center justify-center font-black text-slate-500 shadow-inner">${u.name[0]}</div>
+                                    <div class="w-12 h-12 rounded-2xl bg-slate-100 flex items-center justify-center font-black text-slate-500 shadow-inner">${u.name ? u.name[0] : 'U'}</div>
                                     <div>
-                                        <p class="font-extrabold text-slate-800">${u.name}</p>
+                                        <p class="font-extrabold text-slate-800">${u.name || 'Anonymous'}</p>
                                         <p class="text-[10px] text-blue-600 font-black uppercase tracking-widest">${u.role}</p>
                                     </div>
                                 </div>
                                 <div class="flex items-center gap-4">
                                     <span class="w-3 h-3 rounded-full ${u.status === 'Online' ? 'bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.4)]' : 'bg-slate-300'}"></span>
-                                    <span class="text-xs font-bold text-slate-400">${u.status}</span>
+                                    <span class="text-xs font-bold text-slate-400">${u.status || 'Offline'}</span>
                                 </div>
                             </div>
                         `).join('')}
@@ -382,30 +430,25 @@
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
                         <div class="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm">
                             <h4 class="font-black text-lg mb-6">Access Control</h4>
-                            <p class="text-sm text-slate-400 font-medium mb-8">Manage users and roles across the organization.</p>
                             <div class="space-y-4">
                                 ${users.map(u => `
                                     <div class="flex items-center justify-between p-4 bg-slate-50 rounded-2xl">
-                                        <span class="text-sm font-bold">${u.name}</span>
-                                        ${u.role !== 'Admin' ? `<button onclick="deleteUser('${u.id}')" class="text-red-400 hover:text-red-600 transition-colors"><svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg></button>` : '<span class="text-[9px] font-black text-amber-500 uppercase">Core</span>'}
+                                        <span class="text-sm font-bold">${u.name || 'Anonymous'}</span>
+                                        ${u.role !== 'Admin' ? `<button onclick="deleteUser('${u.id}')" class="text-red-400 hover:text-red-600 transition-colors"><svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg></button>` : '<span class="text-[9px] font-black text-amber-500 uppercase">System Core</span>'}
                                     </div>
                                 `).join('')}
                             </div>
                         </div>
                         <div class="bg-blue-600 p-8 rounded-[2.5rem] text-white shadow-xl shadow-blue-600/20">
-                            <h4 class="font-black text-lg mb-4">System Status</h4>
+                            <h4 class="font-black text-lg mb-4">Node Metrics</h4>
                             <div class="space-y-6 mt-8">
                                 <div class="flex justify-between items-center border-b border-white/10 pb-4">
-                                    <span class="text-sm font-bold opacity-80">Database Latency</span>
-                                    <span class="font-black text-sm">24ms</span>
-                                </div>
-                                <div class="flex justify-between items-center border-b border-white/10 pb-4">
-                                    <span class="text-sm font-bold opacity-80">Connected Nodes</span>
-                                    <span class="font-black text-sm">12 Active</span>
+                                    <span class="text-sm font-bold opacity-80">Sync Latency</span>
+                                    <span class="font-black text-sm">~18ms</span>
                                 </div>
                                 <div class="flex justify-between items-center">
-                                    <span class="text-sm font-bold opacity-80">Security Level</span>
-                                    <span class="font-black text-sm bg-white/20 px-3 py-1 rounded-full">Optimal</span>
+                                    <span class="text-sm font-bold opacity-80">Security Protocol</span>
+                                    <span class="font-black text-sm bg-white/20 px-3 py-1 rounded-full text-xs">AES-256-GCM</span>
                                 </div>
                             </div>
                         </div>
@@ -425,11 +468,10 @@
             const content = document.getElementById('modal-content');
             container.classList.remove('hidden');
             content.innerHTML = `
-                <h3 class="text-2xl font-black mb-2">New Initiative</h3>
-                <p class="text-slate-400 text-sm mb-8 font-medium">Define a new project workspace.</p>
-                <div class="space-y-6">
+                <h3 class="text-2xl font-black mb-2">New Project</h3>
+                <div class="space-y-6 mt-6">
                     <div>
-                        <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Project Name</label>
+                        <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Workspace Title</label>
                         <input type="text" id="new-proj-name" class="w-full bg-slate-50 border border-slate-100 rounded-2xl py-4 px-6 outline-none focus:ring-4 focus:ring-blue-500/10">
                     </div>
                     <div class="flex gap-4 pt-4">
